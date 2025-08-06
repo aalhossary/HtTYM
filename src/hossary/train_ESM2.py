@@ -19,6 +19,33 @@ from sklearn.metrics import f1_score, accuracy_score, roc_auc_score
 from tqdm import tqdm
 import pickle
 import pandas as pd
+import logging
+
+# Configure logging
+def setup_logging(log_dir="logs"):
+    """Set up file and console logging"""
+    Path(log_dir).mkdir(exist_ok=True)
+
+    log_format = "%(asctime)s - %(levelname)s - %(message)s"
+
+    # Main logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    # File handler (rotating logs)
+    file_handler = logging.FileHandler(
+        filename=Path(log_dir) / "training.log",
+        mode='a'  # append mode
+    )
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(file_handler)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(console_handler)
+
+    return logger
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -125,6 +152,9 @@ class ESM2ForMultiLabelClassification(nn.Module):
         return loss, probabilities
 
 def train_model(train_df, val_df, num_labels, config):
+
+    logger.info("Starting training...")
+
     # Initialize tokenizer and model
     tokenizer = EsmTokenizer.from_pretrained(config['model_name'])
     model = ESM2ForMultiLabelClassification(num_labels=num_labels, model_name=config['model_name'])
@@ -145,72 +175,79 @@ def train_model(train_df, val_df, num_labels, config):
 
     # Training loop
     best_val_loss = float('inf')
-    for epoch in range(config['epochs']):
-        model.train()
-        train_loss = 0
+    try:
+        for epoch in range(config['epochs']):
+            logger.info(f"Epoch {epoch+1}/{config['epochs']}")
+            model.train()
+            train_loss = 0
 
-        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config['epochs']}")
+            progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{config['epochs']}")
 
-        for batch in progress_bar:
-            optimizer.zero_grad()
+            for batch in progress_bar:
+                optimizer.zero_grad()
 
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            labels = batch['labels'].to(device)
-
-            # # Convert labels to shape [batch_size, sequence_length, num_classes]
-            # labels = labels.unsqueeze(1).expand(-1, config['max_length'], -1)  # [16, 512, 47]
-
-            loss, _ = model(input_ids, attention_mask, labels)
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item()
-            progress_bar.set_postfix({'train_loss': loss.item()})
-
-        # Validation
-        model.eval()
-        val_loss = 0
-        all_preds = []
-        all_labels = []
-
-        with torch.no_grad():
-            for batch in val_loader:
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 labels = batch['labels'].to(device)
 
-                loss, probs = model(input_ids, attention_mask, labels)
-                val_loss += loss.item()
+                # # Convert labels to shape [batch_size, sequence_length, num_classes]
+                # labels = labels.unsqueeze(1).expand(-1, config['max_length'], -1)  # [16, 512, 47]
 
-                all_preds.append(probs.cpu().numpy())
-                all_labels.append(labels.cpu().numpy())
+                loss, _ = model(input_ids, attention_mask, labels)
+                loss.backward()
+                optimizer.step()
 
-        # Calculate metrics
-        val_loss /= len(val_loader)
-        train_loss /= len(train_loader)
+                train_loss += loss.item()
+                progress_bar.set_postfix({'train_loss': loss.item()})
 
-        all_preds = np.concatenate(all_preds)
-        all_labels = np.concatenate(all_labels)
+            # Validation
+            model.eval()
+            val_loss = 0
+            all_preds = []
+            all_labels = []
 
-        preds = (all_preds > 0.5).astype(int)
+            with torch.no_grad():
+                for batch in val_loader:
+                    input_ids = batch['input_ids'].to(device)
+                    attention_mask = batch['attention_mask'].to(device)
+                    labels = batch['labels'].to(device)
 
-        f1_micro = f1_score(all_labels, preds, average='micro')
-        f1_macro = f1_score(all_labels, preds, average='macro')
-        accuracy = accuracy_score(all_labels, preds)
-        roc_auc = roc_auc_score(all_labels, all_preds)
+                    loss, probs = model(input_ids, attention_mask, labels)
+                    val_loss += loss.item()
 
-        print(f"\nEpoch {epoch + 1}:")
-        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-        print(f"F1 Micro: {f1_micro:.4f} | F1 Macro: {f1_macro:.4f}")
-        print(f"Accuracy: {accuracy:.4f} | ROC AUC: {roc_auc:.4f}")
+                    all_preds.append(probs.cpu().numpy())
+                    all_labels.append(labels.cpu().numpy())
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), 'best_model.pt')
-            print("Saved best model!")
+            # Calculate metrics
+            val_loss /= len(val_loader)
+            train_loss /= len(train_loader)
 
-        scheduler.step(f1_micro)
+            all_preds = np.concatenate(all_preds)
+            all_labels = np.concatenate(all_labels)
+
+            preds = (all_preds > 0.5).astype(int)
+
+            f1_micro = f1_score(all_labels, preds, average='micro')
+            f1_macro = f1_score(all_labels, preds, average='macro')
+            accuracy = accuracy_score(all_labels, preds)
+            roc_auc = roc_auc_score(all_labels, all_preds)
+
+            print(f"\nEpoch {epoch + 1}:")
+            print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            print(f"F1 Micro: {f1_micro:.4f} | F1 Macro: {f1_macro:.4f}")
+            print(f"Accuracy: {accuracy:.4f} | ROC AUC: {roc_auc:.4f}")
+
+            logger.info(f"Train Loss: {loss:.4f} | Val Loss: {val_loss:.4f}")
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(model.state_dict(), 'best_model.pt')
+                print("Saved best model!")
+
+            scheduler.step(f1_micro)
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}", exc_info=True)
+        raise
 
     return model
 
@@ -315,6 +352,9 @@ if __name__ == "__main__":
         'test_size': 0.2,
         'use_helm': False  # Set to True to use HELM notation instead of raw sequence
     }
+
+    # Prepare logging
+    logger = setup_logging()
 
     # Prepare data
     data_folder = Path(r"C:\Users\aalhossary\OneDrive - wesleyan.edu\HtTYM" if os.name == 'nt' else '/smithlab/home/aalhossary/HtTYM/')
