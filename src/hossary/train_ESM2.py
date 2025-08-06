@@ -153,6 +153,9 @@ class ESM2ForMultiLabelClassification(nn.Module):
 
 def train_model(train_df, val_df, num_labels, config):
 
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     logger.info("Starting training...")
 
     # Initialize tokenizer and model
@@ -344,8 +347,8 @@ def parse_helm_notation(helm_str):
 if __name__ == "__main__":
     # Configuration
     config = {
-        'model_name': "facebook/esm2_t6_8M_UR50D", # esm2_t36_3B_UR50D
-        'batch_size': 16,
+        'model_name': "facebook/esm2_t33_650M_UR50D", # esm2_t6_8M_UR50D
+        'batch_size': 4,
         'learning_rate': 2e-5,
         'epochs': 10,
         'max_length': 512,
